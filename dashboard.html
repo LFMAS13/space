@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XOSS Live Dashboard</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --ok:#4ade80; --bad:#f87171; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--text); padding:16px; }
+  h1 { margin:0 0 4px; font-size:1.4rem; }
+  .sub { color:var(--muted); font-size:.85rem; margin-bottom:14px; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; align-items:center; }
+  button { background:var(--card); color:var(--text); border:1px solid #334155; padding:8px 14px; border-radius:8px; cursor:pointer; font-size:.9rem; }
+  button:hover { border-color:var(--accent); }
+  .pill { padding:4px 10px; border-radius:999px; background:var(--card); font-size:.8rem; color:var(--muted); }
+  .pill.auto { color:var(--ok); border:1px solid #14532d; }
+  #scanlist { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; }
+  .card { background:var(--card); border-radius:12px; padding:14px; border:1px solid #334155; }
+  .card .name { font-weight:600; display:flex; justify-content:space-between; gap:8px; }
+  .card .addr { color:var(--muted); font-size:.72rem; word-break:break-all; margin-top:4px; }
+  .bpm { font-size:3rem; font-weight:700; line-height:1.1; margin:8px 0 0; color:var(--bad); }
+  .bpm.off { color:var(--muted); }
+  .unit { color:var(--muted); font-size:.8rem; }
+  canvas { width:100%; height:70px; margin-top:8px; background:#0f172a; border-radius:6px; }
+  .meta { display:flex; justify-content:space-between; color:var(--muted); font-size:.8rem; margin-top:6px; }
+  .who { flex:1; min-width:0; background:#0f172a; color:var(--text); border:1px solid #334155; border-radius:6px; padding:5px 8px; font-size:1rem; font-weight:600; }
+  .who:focus { outline:none; border-color:var(--accent); }
+  .sec { display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; margin-top:10px; background:#0f172a; padding:10px; border-radius:8px; }
+  .sec div { display:flex; flex-direction:column; font-size:.75rem; color:var(--muted); }
+  .sec b { color:var(--text); font-size:1.05rem; font-weight:600; margin-top:2px; }
+  .x { background:none; border:none; color:var(--muted); padding:0 4px; font-size:1rem; }
+  table { border-collapse:collapse; width:100%; font-size:.85rem; }
+  th, td { text-align:left; padding:6px 10px; border-bottom:1px solid #334155; }
+  th { color:var(--muted); font-weight:500; }
+  #msg { color:var(--accent); min-height:1.2em; margin-bottom:8px; font-size:.85rem; }
+</style>
+</head>
+<body>
+<h1>XOSS Live Dashboard</h1>
+<div class="sub" id="conn">Conectando al servidor...</div>
+
+<div class="bar">
+  <button id="scanBtn">Buscar sensores</button>
+  <button id="saveBtn">Guardar JSON por sensor</button>
+  <button id="dlBtn">Descargar JSON</button>
+  <span class="pill auto">● Guardado automático activo</span>
+  <span class="pill" id="saved">Guardados: --</span>
+  <span class="pill" id="interval">Intervalo: --</span>
+</div>
+<div id="msg"></div>
+<div id="scanlist"></div>
+<div class="grid" id="grid"></div>
+<h2 style="font-size:1rem;margin:22px 0 8px">Promedio de BPM por hora <span class="pill">hora local de la computadora</span></h2>
+<div style="overflow-x:auto"><table id="hourly"></table></div>
+
+<script>
+const HISTORY = 120;
+const history = {};
+const $ = id => document.getElementById(id);
+
+function msg(t) { $("msg").textContent = t || ""; }
+async function post(url, body) {
+  const r = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{}) });
+  const j = await r.json();
+  if (!j.ok) msg(j.error || "Error");
+  return j;
+}
+
+$("scanBtn").onclick = async () => {
+  msg(""); $("scanBtn").disabled = true; $("scanBtn").textContent = "Buscando...";
+  try {
+    const r = await fetch("/api/scan");
+    const list = await r.json();
+    const box = $("scanlist"); box.innerHTML = "";
+    list.forEach(d => {
+      const b = document.createElement("button");
+      b.textContent = `${d.name} [${d.address.slice(-8)}]`;
+      b.onclick = async () => { msg(""); b.disabled = true; await post("/api/connect", {address:d.address}); b.remove(); };
+      box.appendChild(b);
+    });
+    if (!list.length) msg("No se encontraron dispositivos. Ponte la banda y busca de nuevo.");
+  } catch (e) { msg("Error al buscar: " + e); }
+  $("scanBtn").disabled = false; $("scanBtn").textContent = "Buscar sensores";
+};
+
+$("dlBtn").onclick = () => { window.location = "/api/export.json"; };
+$("saveBtn").onclick = async () => {
+  const j = await post("/api/export/save");
+  if (j.ok) msg(`Archivos creados en /exports: ${j.files.join(", ")} (${j.readings} lecturas)`);
+};
+
+function draw(canvas, data) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const c = canvas.getContext("2d"); c.scale(dpr, dpr);
+  const vals = data.filter(v => v != null);
+  if (vals.length < 2) return;
+  const lo = Math.min(...vals) - 5, hi = Math.max(...vals) + 5;
+  c.strokeStyle = "#38bdf8"; c.lineWidth = 2; c.beginPath();
+  let started = false;
+  data.forEach((v, i) => {
+    if (v == null) { started = false; return; }
+    const x = (i / (HISTORY - 1)) * w, y = h - ((v - lo) / (hi - lo)) * h;
+    if (!started) { c.moveTo(x, y); started = true; } else c.lineTo(x, y);
+  });
+  c.stroke();
+}
+
+function render(state) {
+  $("saved").textContent = `Guardados: ${state.saved_this_session} (total BD: ${state.total_rows})`;
+  const exportMin = Math.round((state.auto_export_seconds || 3600) / 60);
+  $("interval").textContent = `Guardado: ${state.save_interval_seconds}s · Auto-JSON: cada ${exportMin} min · Sensores: ${state.sensors.length}/${state.max_sensors}`;
+
+  const grid = $("grid");
+  const seen = new Set();
+  state.sensors.forEach(s => {
+    seen.add(s.address);
+    const h = history[s.address] = history[s.address] || [];
+    h.push(s.bpm); if (h.length > HISTORY) h.shift();
+
+    let card = document.getElementById("c-" + s.address);
+    if (!card) {
+      card = document.createElement("div"); card.className = "card"; card.id = "c-" + s.address;
+      card.innerHTML = `
+        <div class="name"><input class="who" placeholder="Nombre del usuario" maxlength="60"><button class="x" title="Desconectar">✕</button></div>
+        <div class="addr"></div>
+        <div class="bpm"></div><div class="unit">BPM</div>
+        <div class="sec"></div>
+        <canvas></canvas>
+        <div class="meta"><span class="st"></span></div>`;
+      card.querySelector(".who").onchange = e => post("/api/name", {address: s.address, name: e.target.value});
+      card.querySelector(".x").onclick = () => post("/api/disconnect", {address: s.address});
+      grid.appendChild(card);
+    }
+
+    const who = card.querySelector(".who");
+    if (document.activeElement !== who) who.value = s.user_name || "";
+    card.querySelector(".addr").textContent = `${s.name} · ${s.address}`;
+
+    const b = card.querySelector(".bpm");
+    b.textContent = s.bpm != null ? s.bpm : "--";
+    b.className = "bpm" + (s.bpm == null ? " off" : "");
+
+    const fixedMetrics = [
+      ["BPM Promedio", s.avg_bpm != null ? `${s.avg_bpm} BPM` : "--"],
+      ["BPM Máximo", s.max_bpm != null ? `${s.max_bpm} BPM` : "--"],
+      ["Calorías", `${(s.calories_kcal || 0).toFixed(1)} kcal`],
+      ["Batería", s.battery != null ? `${s.battery}%` : "--"]
+    ];
+    card.querySelector(".sec").innerHTML = fixedMetrics.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("");
+    card.querySelector(".st").textContent = !s.connected ? "🔴 Desconectado" : s.receiving ? "🟢 Guardando en vivo" : "🟡 Esperando pulso...";
+    draw(card.querySelector("canvas"), h);
+  });
+  [...grid.children].forEach(el => { if (!seen.has(el.id.slice(2))) el.remove(); });
+}
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+async function loadHourly() {
+  try {
+    const groups = await (await fetch("/api/hourly_bpm")).json();
+    const rows = groups.flatMap(g => g.hourly_avg_bpm.map(h =>
+      `<tr><td>${esc(g.user_name || g.device_name)}</td><td>${h.hour}</td><td><b>${h.avg_bpm}</b></td><td>${h.min_bpm}</td><td>${h.max_bpm}</td><td>${h.samples}</td></tr>`));
+    $("hourly").innerHTML = rows.length
+      ? "<tr><th>Usuario</th><th>Hora</th><th>Promedio</th><th>Mín</th><th>Máx</th><th>Muestras</th></tr>" + rows.join("")
+      : "<tr><td>Sin datos todavía: conecta una banda cardíaca para iniciar el registro automático.</td></tr>";
+  } catch (e) {}
+}
+loadHourly(); setInterval(loadHourly, 30000);
+
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.onopen = () => $("conn").textContent = "Conectado · datos en vivo";
+  ws.onmessage = e => render(JSON.parse(e.data));
+  ws.onclose = () => { $("conn").textContent = "Desconectado. Reintentando..."; setTimeout(connect, 2000); };
+}
+connect();
+</script>
+</body>
+</html>
