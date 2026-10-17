@@ -1,0 +1,11 @@
+{
+  "save_interval_seconds": 1.0,
+  "dashboard_refresh_seconds": 1.0,
+  "scan_timeout_seconds": 8,
+  "max_sensors": 5,
+  "stale_after_seconds": 5,
+  "auto_json_export_every_seconds": 3600,
+  "export_dir": "exports",
+  "host": "0.0.0.0",
+  "port": 8080
+}
