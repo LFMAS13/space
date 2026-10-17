@@ -16,10 +16,14 @@
   .pill { padding:4px 10px; border-radius:999px; background:var(--card); font-size:.8rem; color:var(--muted); }
   .pill.auto { color:var(--ok); border:1px solid #14532d; }
   #scanlist { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:12px; }
   .card { background:var(--card); border-radius:12px; padding:14px; border:1px solid #334155; }
   .card .name { font-weight:600; display:flex; justify-content:space-between; gap:8px; }
   .card .addr { color:var(--muted); font-size:.72rem; word-break:break-all; margin-top:4px; }
+  .profile { display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; margin-top:8px; }
+  .profile label { display:flex; flex-direction:column; font-size:.7rem; color:var(--muted); gap:3px; }
+  .profile input, .profile select { width:100%; background:#0f172a; color:var(--text); border:1px solid #334155; border-radius:6px; padding:4px 6px; font-size:.85rem; font-weight:600; }
+  .profile input:focus, .profile select:focus { outline:none; border-color:var(--accent); }
   .bpm { font-size:3rem; font-weight:700; line-height:1.1; margin:8px 0 0; color:var(--bad); }
   .bpm.off { color:var(--muted); }
   .unit { color:var(--muted); font-size:.8rem; }
@@ -38,7 +42,7 @@
 </style>
 </head>
 <body>
-<h1>XOSS Live Dashboard</h1>
+<h1>Biometric Dashboard</h1>
 <div class="sub" id="conn">Connecting to server...</div>
 
 <div class="bar">
@@ -127,17 +131,47 @@ function render(state) {
       card.innerHTML = `
         <div class="name"><input class="who" placeholder="User name" maxlength="60"><button class="x" title="Disconnect">✕</button></div>
         <div class="addr"></div>
+        <div class="profile">
+          <label>Weight (kg)<input type="number" class="p-weight" min="20" max="250" step="0.5"></label>
+          <label>Age<input type="number" class="p-age" min="5" max="110" step="1"></label>
+          <label>Gender
+            <select class="p-gender">
+              <option value="M">Male (M)</option>
+              <option value="F">Female (F)</option>
+            </select>
+          </label>
+        </div>
         <div class="bpm"></div><div class="unit">BPM</div>
         <div class="sec"></div>
         <canvas></canvas>
         <div class="meta"><span class="st"></span></div>`;
-      card.querySelector(".who").onchange = e => post("/api/name", {address: s.address, name: e.target.value});
+
+      const saveProfile = () => post("/api/profile", {
+        address: s.address,
+        name: card.querySelector(".who").value,
+        weight_kg: parseFloat(card.querySelector(".p-weight").value) || 70,
+        age: parseInt(card.querySelector(".p-age").value, 10) || 25,
+        gender: card.querySelector(".p-gender").value
+      });
+
+      card.querySelector(".who").onchange = saveProfile;
+      card.querySelector(".p-weight").onchange = saveProfile;
+      card.querySelector(".p-age").onchange = saveProfile;
+      card.querySelector(".p-gender").onchange = saveProfile;
       card.querySelector(".x").onclick = () => post("/api/disconnect", {address: s.address});
       grid.appendChild(card);
     }
 
     const who = card.querySelector(".who");
+    const wInput = card.querySelector(".p-weight");
+    const aInput = card.querySelector(".p-age");
+    const gInput = card.querySelector(".p-gender");
+
     if (document.activeElement !== who) who.value = s.user_name || "";
+    if (document.activeElement !== wInput) wInput.value = s.weight_kg != null ? s.weight_kg : 70;
+    if (document.activeElement !== aInput) aInput.value = s.age != null ? s.age : 25;
+    if (document.activeElement !== gInput) gInput.value = s.gender || "M";
+
     card.querySelector(".addr").textContent = `${s.name} · ${s.address}`;
 
     const b = card.querySelector(".bpm");

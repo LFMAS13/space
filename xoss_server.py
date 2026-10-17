@@ -1,5 +1,5 @@
 """
-XOSS Heart Rate Logger + Dashboard en vivo (Listo para PyInstaller .exe).
+XOSS Heart Rate Logger + Live Dashboard (Listo para PyInstaller .exe).
 BLE (Frecuencia Cardíaca + Batería) -> SQLite (automático al conectar) -> WebSocket + Exportación JSON por sensor.
 Requisitos: pip install bleak aiohttp pyinstaller
 Uso normal: python xoss_server.py
@@ -29,6 +29,7 @@ U = lambda n: f"0000{n}{TAIL}"
 HR_SERVICE, HR_CHAR = U("180d"), U("2a37")
 BATTERY_SERVICE, BATTERY_LEVEL = U("180f"), U("2a19")
 
+# Configuración limpia (sin wheel_circumference_mm, stopped_after_seconds ni datos de usuario globales)
 DEFAULTS = {
     "save_interval_seconds": 1.0,
     "dashboard_refresh_seconds": 1.0,
@@ -36,13 +37,12 @@ DEFAULTS = {
     "max_sensors": 5,
     "stale_after_seconds": 5,
     "auto_json_export_every_seconds": 3600,  # 3600 s = 1 hora
-    "user_weight_kg": 70.0,
-    "user_age": 25,
-    "user_gender": "M",
     "export_dir": "exports",
     "host": "0.0.0.0",
     "port": 8080
 }
+
+DEFAULT_PROFILE = {"name": "", "weight_kg": 70.0, "age": 25, "gender": "M"}
 
 INSERT = """INSERT INTO readings (
     recorded_at_utc, user_name, device_name, device_address,
@@ -54,16 +54,42 @@ clean_name = lambda s: re.sub(r"[^a-zA-Z0-9_-]", "_", s.strip()) if s and s.stri
 
 
 def load_config():
-    if not CONFIG_PATH.exists():
-        CONFIG_PATH.write_text(json.dumps(DEFAULTS, indent=2), "utf-8")
-    raw = json.loads(CONFIG_PATH.read_text("utf-8"))
+    raw = {}
+    if CONFIG_PATH.exists():
+        try:
+            raw = json.loads(CONFIG_PATH.read_text("utf-8"))
+        except Exception:
+            raw = {}
     if raw.get("auto_json_export_every_seconds") == 0:
         raw["auto_json_export_every_seconds"] = 3600
-    cfg = {**DEFAULTS, **raw}
+    # Filtra únicamente las llaves válidas de DEFAULTS (elimina wheel_circumference_mm, etc.)
+    cfg = {k: raw.get(k, v) for k, v in DEFAULTS.items()}
     cfg["save_interval_seconds"] = max(0.2, float(cfg["save_interval_seconds"]))
     cfg["dashboard_refresh_seconds"] = max(0.2, float(cfg["dashboard_refresh_seconds"]))
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2), "utf-8")
     return cfg
+
+
+def load_users():
+    """Carga los perfiles por sensor (nombre, peso, edad, sexo) y migra el formato anterior si existía."""
+    if not USERS_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(USERS_PATH.read_text("utf-8"))
+    except Exception:
+        return {}
+    users = {}
+    for addr, val in raw.items():
+        if isinstance(val, str):
+            users[addr] = {**DEFAULT_PROFILE, "name": val}
+        elif isinstance(val, dict):
+            users[addr] = {
+                "name": str(val.get("name", "")).strip()[:60],
+                "weight_kg": float(val.get("weight_kg", 70.0)),
+                "age": int(val.get("age", 25)),
+                "gender": "F" if str(val.get("gender", "M")).upper().startswith("F") else "M"
+            }
+    return users
 
 
 # ---------------------------------------------------------------- Base de datos
@@ -108,16 +134,21 @@ def hourly_bpm(since_id=0):
     return groups
 
 
-def build_export_by_sensor(since_id=0):
+def build_export_by_sensor(since_id=0, profiles=None):
     """Agrupa las lecturas por sensor para exportar un archivo JSON individual por cada uno."""
     rows = query("""SELECT id, recorded_at_utc, user_name, device_name, device_address,
                            heart_rate_bpm, avg_bpm, max_bpm, calories_kcal, battery_percent
                     FROM readings WHERE id > ? ORDER BY id""", (since_id,))
     sensors = {}
+    profiles = profiles or {}
     for _, ts, user, dev, addr, bpm, avg_b, max_b, cal, bat in rows:
+        p = profiles.get(addr, DEFAULT_PROFILE)
         s = sensors.setdefault(addr, {
             "exported_at_utc": now_iso("seconds"),
-            "user_name": user,
+            "user_name": user or p.get("name") or None,
+            "user_weight_kg": p.get("weight_kg", 70.0),
+            "user_age": p.get("age", 25),
+            "user_gender": p.get("gender", "M"),
             "device_name": dev,
             "device_address": addr,
             "total_readings": 0,
@@ -162,13 +193,16 @@ def calc_kcal_per_sec(bpm, weight_kg=70.0, age=25, gender="M"):
 
 # ---------------------------------------------------------------- Clase Sensor
 class Sensor:
-    def __init__(self, device, cfg):
+    def __init__(self, device, profile=None):
         self.address = device.address
         self.name = device.name or "XOSS"
-        self.cfg = cfg
         self.client = None
         self.connected = False
-        self.user_name = ""
+        p = {**DEFAULT_PROFILE, **(profile or {})}
+        self.user_name = p["name"]
+        self.weight_kg = float(p["weight_kg"])
+        self.age = int(p["age"])
+        self.gender = p["gender"]
         self.battery = None
         self.last_update = 0.0
         self.bpm = None
@@ -176,6 +210,12 @@ class Sensor:
         self.bpm_count = 0
         self.max_bpm = None
         self.calories_kcal = 0.0
+
+    def apply_profile(self, p):
+        self.user_name = p["name"]
+        self.weight_kg = float(p["weight_kg"])
+        self.age = int(p["age"])
+        self.gender = p["gender"]
 
     def on_hr(self, data):
         bpm = parse_hr(data)
@@ -185,7 +225,7 @@ class Sensor:
                 dt = min(now - self.last_update, 10.0)
                 if dt > 0:
                     self.calories_kcal += calc_kcal_per_sec(
-                        bpm, self.cfg["user_weight_kg"], self.cfg["user_age"], self.cfg["user_gender"]
+                        bpm, self.weight_kg, self.age, self.gender
                     ) * dt
             self.last_update = now
             self.bpm = bpm
@@ -215,6 +255,9 @@ class Sensor:
             "address": self.address,
             "name": self.name,
             "user_name": self.user_name,
+            "weight_kg": self.weight_kg,
+            "age": self.age,
+            "gender": self.gender,
             "connected": self.connected,
             "receiving": receiving,
             "bpm": self.bpm if receiving else None,
@@ -235,7 +278,7 @@ class State:
         self.last_export_id = 0
         self.export_counts = {}  # address -> consecutivo (#) de exportación
         self.total_rows = query("SELECT COUNT(*) FROM readings")[0][0]
-        self.names = json.loads(USERS_PATH.read_text("utf-8")) if USERS_PATH.exists() else {}
+        self.users = load_users()
 
     def snapshot(self):
         c, now = self.cfg, time.time()
@@ -253,19 +296,18 @@ async def connect_sensor(st, address):
     if address in st.sensors and st.sensors[address].connected:
         return
     if sum(s.connected for s in st.sensors.values()) >= st.cfg["max_sensors"]:
-        raise RuntimeError(f"Máximo de {st.cfg['max_sensors']} sensores conectados.")
+        raise RuntimeError(f"Maximum of {st.cfg['max_sensors']} connected sensors reached.")
     if address not in st.known:
-        raise RuntimeError("Dispositivo desconocido. Busca sensores primero.")
+        raise RuntimeError("Unknown device. Please scan for sensors first.")
 
     device = st.known[address]
-    sensor = st.sensors[address] = Sensor(device, st.cfg)
-    sensor.user_name = st.names.get(address, "")
+    sensor = st.sensors[address] = Sensor(device, st.users.get(address))
     sensor.client = BleakClient(device, disconnected_callback=lambda _c: setattr(sensor, "connected", False))
     try:
         await sensor.client.connect()
         services = sensor.client.services
         if not services.get_service(HR_SERVICE):
-            raise RuntimeError("El dispositivo no expone el servicio de Frecuencia Cardíaca (180D).")
+            raise RuntimeError("Device does not expose Heart Rate service (180D).")
 
         await sensor.client.start_notify(HR_CHAR, lambda _s, d: sensor.on_hr(d))
         sensor.connected = True
@@ -323,7 +365,7 @@ async def broadcast_loop(st):
 
 async def write_sensor_exports(st, since_id=0):
     """Crea un archivo [Nombre_hora_#].json por cada sensor con datos."""
-    sensors_data, last_id = await asyncio.to_thread(build_export_by_sensor, since_id)
+    sensors_data, last_id = await asyncio.to_thread(build_export_by_sensor, since_id, st.users)
     if not sensors_data:
         return [], since_id, 0
 
@@ -355,7 +397,7 @@ async def auto_export_loop(st):
         await asyncio.sleep(every)
         files, st.last_export_id, n = await write_sensor_exports(st, st.last_export_id)
         if files:
-            print(f"[Auto-Export] {n} lecturas guardadas en: {', '.join(files)}")
+            print(f"[Auto-Export] {n} readings saved in: {', '.join(files)}")
 
 
 # ---------------------------------------------------------------- Rutas HTTP
@@ -382,21 +424,36 @@ async def disconnect(st, b):
 
 
 @api
-async def set_name(st, b):
-    addr, name = b["address"], str(b.get("name", "")).strip()[:60]
-    st.names.pop(addr, None)
-    if name:
-        st.names[addr] = name
-    USERS_PATH.write_text(json.dumps(st.names, indent=2, ensure_ascii=False), "utf-8")
+async def set_profile(st, b):
+    """Guarda nombre, peso, edad y género por sensor desde el dashboard."""
+    addr = b["address"]
+    cur = {**DEFAULT_PROFILE, **st.users.get(addr, {})}
+    if "name" in b:
+        cur["name"] = str(b.get("name", "")).strip()[:60]
+    if "weight_kg" in b:
+        try:
+            cur["weight_kg"] = max(20.0, min(250.0, float(b["weight_kg"])))
+        except (ValueError, TypeError):
+            pass
+    if "age" in b:
+        try:
+            cur["age"] = max(5, min(110, int(float(b["age"]))))
+        except (ValueError, TypeError):
+            pass
+    if "gender" in b:
+        cur["gender"] = "F" if str(b["gender"]).upper().startswith("F") else "M"
+
+    st.users[addr] = cur
+    USERS_PATH.write_text(json.dumps(st.users, indent=2, ensure_ascii=False), "utf-8")
     if addr in st.sensors:
-        st.sensors[addr].user_name = name
+        st.sensors[addr].apply_profile(cur)
 
 
 @api
 async def export_save(st, b):
     files, _, n = await write_sensor_exports(st, 0)
     if not files:
-        raise RuntimeError("No hay lecturas guardadas todavía.")
+        raise RuntimeError("No readings saved yet.")
     return {"files": files, "readings": n}
 
 
@@ -409,7 +466,7 @@ async def scan(request):
     found = await BleakScanner.discover(timeout=st.cfg["scan_timeout_seconds"])
     found.sort(key=lambda d: (not any(w in (d.name or "").lower() for w in ("xoss", "heart")), (d.name or "").lower()))
     st.known = {d.address: d for d in found}
-    return web.json_response([{"address": d.address, "name": d.name or "Sin nombre"} for d in found])
+    return web.json_response([{"address": d.address, "name": d.name or "Unnamed"} for d in found])
 
 
 async def hourly(request):
@@ -417,13 +474,14 @@ async def hourly(request):
 
 
 async def export_download(request):
-    sensors_data, _ = await asyncio.to_thread(build_export_by_sensor, 0)
+    st = request.app["state"]
+    sensors_data, _ = await asyncio.to_thread(build_export_by_sensor, 0, st.users)
     hora_str = datetime.now().strftime("%H-%M")
     payload = {"exported_at_utc": now_iso("seconds"), "sensors": list(sensors_data.values())}
     return web.Response(
         text=json.dumps(payload, indent=2, ensure_ascii=False),
         content_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="Sensores_{hora_str}_1.json"'}
+        headers={"Content-Disposition": f'attachment; filename="Sensors_{hora_str}_1.json"'}
     )
 
 
@@ -462,7 +520,8 @@ def make_app(cfg):
         web.get("/api/hourly_bpm", hourly),
         web.post("/api/connect", connect),
         web.post("/api/disconnect", disconnect),
-        web.post("/api/name", set_name),
+        web.post("/api/profile", set_profile),
+        web.post("/api/name", set_profile),
         web.post("/api/export/save", export_save)
     ])
     app.on_startup.append(on_startup)
@@ -474,8 +533,7 @@ if __name__ == "__main__":
     cfg = load_config()
     init_db()
     url = f"http://localhost:{cfg['port']}"
-    print(f"Servidor XOSS activo en: {url}")
-    print("No cierres esta ventana mientras estes registrando datos.")
-    # Abre el navegador automáticamente 1.5 segundos después de iniciar el programa
+    print(f"XOSS Server active at: {url}")
+    print("Keep this window open while recording data.")
     threading.Timer(1.5, lambda: webbrowser.open(url)).start()
     web.run_app(make_app(cfg), host=cfg["host"], port=cfg["port"])
