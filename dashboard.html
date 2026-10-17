@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -39,20 +39,20 @@
 </head>
 <body>
 <h1>XOSS Live Dashboard</h1>
-<div class="sub" id="conn">Conectando al servidor...</div>
+<div class="sub" id="conn">Connecting to server...</div>
 
 <div class="bar">
-  <button id="scanBtn">Buscar sensores</button>
-  <button id="saveBtn">Guardar JSON por sensor</button>
-  <button id="dlBtn">Descargar JSON</button>
-  <span class="pill auto">● Guardado automático activo</span>
-  <span class="pill" id="saved">Guardados: --</span>
-  <span class="pill" id="interval">Intervalo: --</span>
+  <button id="scanBtn">Scan Sensors</button>
+  <button id="saveBtn">Save JSON per Sensor</button>
+  <button id="dlBtn">Download JSON</button>
+  <span class="pill auto">● Auto-save active</span>
+  <span class="pill" id="saved">Saved: --</span>
+  <span class="pill" id="interval">Interval: --</span>
 </div>
 <div id="msg"></div>
 <div id="scanlist"></div>
 <div class="grid" id="grid"></div>
-<h2 style="font-size:1rem;margin:22px 0 8px">Promedio de BPM por hora <span class="pill">hora local de la computadora</span></h2>
+<h2 style="font-size:1rem;margin:22px 0 8px">Hourly Average BPM <span class="pill">local computer time</span></h2>
 <div style="overflow-x:auto"><table id="hourly"></table></div>
 
 <script>
@@ -69,7 +69,7 @@ async function post(url, body) {
 }
 
 $("scanBtn").onclick = async () => {
-  msg(""); $("scanBtn").disabled = true; $("scanBtn").textContent = "Buscando...";
+  msg(""); $("scanBtn").disabled = true; $("scanBtn").textContent = "Scanning...";
   try {
     const r = await fetch("/api/scan");
     const list = await r.json();
@@ -80,15 +80,15 @@ $("scanBtn").onclick = async () => {
       b.onclick = async () => { msg(""); b.disabled = true; await post("/api/connect", {address:d.address}); b.remove(); };
       box.appendChild(b);
     });
-    if (!list.length) msg("No se encontraron dispositivos. Ponte la banda y busca de nuevo.");
-  } catch (e) { msg("Error al buscar: " + e); }
-  $("scanBtn").disabled = false; $("scanBtn").textContent = "Buscar sensores";
+    if (!list.length) msg("No devices found. Put on the strap and scan again.");
+  } catch (e) { msg("Scan error: " + e); }
+  $("scanBtn").disabled = false; $("scanBtn").textContent = "Scan Sensors";
 };
 
 $("dlBtn").onclick = () => { window.location = "/api/export.json"; };
 $("saveBtn").onclick = async () => {
   const j = await post("/api/export/save");
-  if (j.ok) msg(`Archivos creados en /exports: ${j.files.join(", ")} (${j.readings} lecturas)`);
+  if (j.ok) msg(`Files created in /exports: ${j.files.join(", ")} (${j.readings} readings)`);
 };
 
 function draw(canvas, data) {
@@ -110,9 +110,9 @@ function draw(canvas, data) {
 }
 
 function render(state) {
-  $("saved").textContent = `Guardados: ${state.saved_this_session} (total BD: ${state.total_rows})`;
+  $("saved").textContent = `Saved: ${state.saved_this_session} (total DB: ${state.total_rows})`;
   const exportMin = Math.round((state.auto_export_seconds || 3600) / 60);
-  $("interval").textContent = `Guardado: ${state.save_interval_seconds}s · Auto-JSON: cada ${exportMin} min · Sensores: ${state.sensors.length}/${state.max_sensors}`;
+  $("interval").textContent = `Save: ${state.save_interval_seconds}s · Auto-JSON: every ${exportMin} min · Sensors: ${state.sensors.length}/${state.max_sensors}`;
 
   const grid = $("grid");
   const seen = new Set();
@@ -125,7 +125,7 @@ function render(state) {
     if (!card) {
       card = document.createElement("div"); card.className = "card"; card.id = "c-" + s.address;
       card.innerHTML = `
-        <div class="name"><input class="who" placeholder="Nombre del usuario" maxlength="60"><button class="x" title="Desconectar">✕</button></div>
+        <div class="name"><input class="who" placeholder="User name" maxlength="60"><button class="x" title="Disconnect">✕</button></div>
         <div class="addr"></div>
         <div class="bpm"></div><div class="unit">BPM</div>
         <div class="sec"></div>
@@ -145,13 +145,13 @@ function render(state) {
     b.className = "bpm" + (s.bpm == null ? " off" : "");
 
     const fixedMetrics = [
-      ["BPM Promedio", s.avg_bpm != null ? `${s.avg_bpm} BPM` : "--"],
-      ["BPM Máximo", s.max_bpm != null ? `${s.max_bpm} BPM` : "--"],
-      ["Calorías", `${(s.calories_kcal || 0).toFixed(1)} kcal`],
-      ["Batería", s.battery != null ? `${s.battery}%` : "--"]
+      ["Avg BPM", s.avg_bpm != null ? `${s.avg_bpm} BPM` : "--"],
+      ["Max BPM", s.max_bpm != null ? `${s.max_bpm} BPM` : "--"],
+      ["Calories", `${(s.calories_kcal || 0).toFixed(1)} kcal`],
+      ["Battery", s.battery != null ? `${s.battery}%` : "--"]
     ];
     card.querySelector(".sec").innerHTML = fixedMetrics.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("");
-    card.querySelector(".st").textContent = !s.connected ? "🔴 Desconectado" : s.receiving ? "🟢 Guardando en vivo" : "🟡 Esperando pulso...";
+    card.querySelector(".st").textContent = !s.connected ? "🔴 Disconnected" : s.receiving ? "🟢 Live recording" : "🟡 Waiting for pulse...";
     draw(card.querySelector("canvas"), h);
   });
   [...grid.children].forEach(el => { if (!seen.has(el.id.slice(2))) el.remove(); });
@@ -164,17 +164,17 @@ async function loadHourly() {
     const rows = groups.flatMap(g => g.hourly_avg_bpm.map(h =>
       `<tr><td>${esc(g.user_name || g.device_name)}</td><td>${h.hour}</td><td><b>${h.avg_bpm}</b></td><td>${h.min_bpm}</td><td>${h.max_bpm}</td><td>${h.samples}</td></tr>`));
     $("hourly").innerHTML = rows.length
-      ? "<tr><th>Usuario</th><th>Hora</th><th>Promedio</th><th>Mín</th><th>Máx</th><th>Muestras</th></tr>" + rows.join("")
-      : "<tr><td>Sin datos todavía: conecta una banda cardíaca para iniciar el registro automático.</td></tr>";
+      ? "<tr><th>User</th><th>Hour</th><th>Average</th><th>Min</th><th>Max</th><th>Samples</th></tr>" + rows.join("")
+      : "<tr><td>No data yet: connect a heart rate strap to start automatic recording.</td></tr>";
   } catch (e) {}
 }
 loadHourly(); setInterval(loadHourly, 30000);
 
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-  ws.onopen = () => $("conn").textContent = "Conectado · datos en vivo";
+  ws.onopen = () => $("conn").textContent = "Connected · live data";
   ws.onmessage = e => render(JSON.parse(e.data));
-  ws.onclose = () => { $("conn").textContent = "Desconectado. Reintentando..."; setTimeout(connect, 2000); };
+  ws.onclose = () => { $("conn").textContent = "Disconnected. Retrying..."; setTimeout(connect, 2000); };
 }
 connect();
 </script>
